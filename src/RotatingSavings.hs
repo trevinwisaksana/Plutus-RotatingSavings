@@ -46,11 +46,10 @@ import           Text.Printf          (printf)
 minLovelace :: Integer
 minLovelace = 2000000
 
-data SavingsDatum = SavingsDatum 
+data SavingsDatum = SavingsDatum
     { members        :: [PaymentPubKeyHash]
     , winners        :: [PaymentPubKeyHash]
     , stake          :: Integer
-    , minStake       :: Integer
     , joinDeadline   :: POSIXTime
     } deriving Show
 
@@ -143,7 +142,7 @@ data StartSessionParams = StartSessionParams
 startSession :: AsContractError e => StartSessionParams -> Contract w s e ()
 startSession p = do
     pkh <- Contract.ownPaymentPubKeyHash
-    let dat = SavingsDatum 
+    let dat = SavingsDatum
                 { stake         = ssStake p
                 , members       = [pkh]
                 , winners       = []
@@ -180,8 +179,8 @@ joinSession p = do
                             , winners  = []
                             , joinDeadline = joinDeadline dat
                             }
-                        lookups = Constraints.unspentOutputs utxos <> 
-                                  Constraints.otherScript validator <> 
+                        lookups = Constraints.unspentOutputs utxos <>
+                                  Constraints.otherScript validator <>
                                   Constraints.typedValidatorLookups typedRotatingSavingsValidator
                         tx   = Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ stake newDat) <>
                                Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ JoinSession)
@@ -196,14 +195,14 @@ joinSession p = do
             Left _          -> False
             Right (Datum e) -> case PlutusTx.fromBuiltinData e of
                 Nothing -> False
-                Just d  -> joinDeadline d > now && (length $ members d) < 12 
+                Just d  -> joinDeadline d > now && length (members d) < 12
 
         hasMostMembers :: [ChainIndexTxOut] -> ChainIndexTxOut
         hasMostMembers [x] = x
-        hasMostMembers (x:xs) 
+        hasMostMembers (x:xs)
             | membersCount > maxTail = x
             | otherwise = hasMostMembers xs
-            where 
+            where
                 membersCount = length $ members (getDatum' x)
                 maxTail = length $ members (getDatum' $ hasMostMembers xs)
 
@@ -222,8 +221,8 @@ leaveSession = do
                     , winners  = removePkh pkh $ winners dat
                     , joinDeadline = joinDeadline dat
                     }
-                lookups = Constraints.unspentOutputs utxos <> 
-                          Constraints.otherScript validator <> 
+                lookups = Constraints.unspentOutputs utxos <>
+                          Constraints.otherScript validator <>
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
                 tx   = Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ stake dat) <>
                        Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Leave pkh)
@@ -254,8 +253,8 @@ makePayment amount = do
                     , winners  = winners dat
                     , joinDeadline = joinDeadline dat
                     }
-                lookups = Constraints.unspentOutputs utxos <> 
-                          Constraints.otherScript validator <> 
+                lookups = Constraints.unspentOutputs utxos <>
+                          Constraints.otherScript validator <>
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
                 tx   = Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ stake newDat) <>
                        Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ MakePayment)
@@ -272,7 +271,7 @@ raffle = do
     if Map.null utxos
         then do Contract.logInfo @String $ "You have not joined a session"
         else do
-            let session = head $ snd <$> (Map.toList utxos)   
+            let session = head $ snd <$> (Map.toList utxos)
                 oref = head $ fst <$> Map.toList utxos
                 dat = getDatum' (head $ snd <$> (Map.toList utxos))
                 everyoneHasWonOnce = length (winners dat) == length (members dat)
@@ -295,17 +294,17 @@ raffle = do
         resetSession dat utxos oref = do
             let sMembers = shuffleMembers (members dat)
                 winner = head sMembers
-                newDat = SavingsDatum { 
-                  stake    = minLovelace 
+                newDat = SavingsDatum {
+                  stake    = minLovelace
                 , members  = members dat
-                , winners  = [winner] 
+                , winners  = [winner]
                 , joinDeadline = joinDeadline dat
                 }
-                lookups = Constraints.unspentOutputs utxos <> 
-                          Constraints.otherScript validator <> 
+                lookups = Constraints.unspentOutputs utxos <>
+                          Constraints.otherScript validator <>
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
                 tx = Constraints.mustPayToPubKey winner (Ada.lovelaceValueOf $ (stake dat - minLovelace)) <>
-                     Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ minLovelace) <> 
+                     Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ minLovelace) <>
                      Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle)
             Contract.logInfo $ "Original members:" <> show (members dat)
             Contract.logInfo $ "Members shuffled:" <> show sMembers
@@ -318,17 +317,17 @@ raffle = do
         continueSession dat utxos oref = do
             let sMembers = shuffleMembers (notWinners (members dat) (winners dat))
                 winner = head sMembers
-                newDat = SavingsDatum { 
-                  stake    = minLovelace 
+                newDat = SavingsDatum {
+                  stake    = minLovelace
                 , members  = members dat
                 , winners  = [winner] ++ winners dat
                 , joinDeadline = joinDeadline dat
                 }
-                lookups = Constraints.unspentOutputs utxos <> 
-                          Constraints.otherScript validator <> 
+                lookups = Constraints.unspentOutputs utxos <>
+                          Constraints.otherScript validator <>
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
                 tx = Constraints.mustPayToPubKey winner (Ada.lovelaceValueOf $ (stake dat - minLovelace)) <>
-                     Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ minLovelace) <> 
+                     Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ minLovelace) <>
                      Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle)
             Contract.logInfo $ "Original members:" <> show (members dat)
             Contract.logInfo $ "Members shuffled:" <> show sMembers
@@ -337,8 +336,8 @@ raffle = do
             void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
             Contract.logInfo @String $ "Session has continued"
 
-type RotatingSavingsSchema = 
-               Endpoint "startSession" StartSessionParams 
+type RotatingSavingsSchema =
+               Endpoint "startSession" StartSessionParams
            .\/ Endpoint "joinSession" JoinSessionParams
            .\/ Endpoint "leaveSession" ()
            .\/ Endpoint "makePayment" Integer
