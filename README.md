@@ -12,3 +12,4 @@ A proof-of-concept Plutus script that mimics the functionality of a rotating sav
 ## Ways to improve
 - The script should prevent someone from winning and then leaving immediately
 - Script may be very heavy and unoptimized
+- Members shouldn't be able to call raffle anytime after the deadline has passed but in time intervals instead
