@@ -213,7 +213,7 @@ leaveSession = do
     if Map.null utxos
         then do Contract.logInfo @String $ "You have not joined a session"
         else do
-            let dat = getDatum' (head $ snd <$> (Map.toList utxos))
+            let dat = getDatum' (head $ snd <$> Map.toList utxos)
                 oref = head $ fst <$> Map.toList utxos
                 newDat = SavingsDatum
                     { stake    = stake dat
@@ -245,10 +245,10 @@ makePayment amount = do
     if Map.null utxos
         then do Contract.logInfo @String $ "You have not joined a session"
         else do
-            let dat = getDatum' (head $ snd <$> (Map.toList utxos))
+            let dat = getDatum' (head $ snd <$> Map.toList utxos)
                 oref = head $ fst <$> Map.toList utxos
                 newDat = SavingsDatum
-                    { stake    = (stake dat) + amount
+                    { stake    = stake dat + amount
                     , members  = members dat
                     , winners  = winners dat
                     , joinDeadline = joinDeadline dat
@@ -271,9 +271,9 @@ raffle = do
     if Map.null utxos
         then do Contract.logInfo @String $ "You have not joined a session"
         else do
-            let session = head $ snd <$> (Map.toList utxos)
+            let session = head $ snd <$> Map.toList utxos
                 oref = head $ fst <$> Map.toList utxos
-                dat = getDatum' (head $ snd <$> (Map.toList utxos))
+                dat = getDatum' (head $ snd <$> Map.toList utxos)
                 everyoneHasWonOnce = length (winners dat) == length (members dat)
             case everyoneHasWonOnce of
                 True -> resetSession dat utxos oref
@@ -288,7 +288,7 @@ raffle = do
         splitAlt = PlutusTx.Prelude.foldr (\x (ys, zs) -> (x:zs, ys)) ([],[])
 
         notWinners :: [PaymentPubKeyHash] -> [PaymentPubKeyHash] -> [PaymentPubKeyHash]
-        notWinners members winners = PlutusTx.Prelude.filter (\pkh -> pkh `notElem` winners) members
+        notWinners members winners = PlutusTx.Prelude.filter (`notElem` winners) members
 
         resetSession :: AsContractError e => SavingsDatum -> Map TxOutRef ChainIndexTxOut -> TxOutRef -> Contract w s e ()
         resetSession dat utxos oref = do
@@ -320,15 +320,15 @@ raffle = do
                 newDat = SavingsDatum {
                   stake    = minLovelace
                 , members  = members dat
-                , winners  = [winner] ++ winners dat
+                , winners  = winner : winners dat
                 , joinDeadline = joinDeadline dat
                 }
                 lookups = Constraints.unspentOutputs utxos <>
                           Constraints.otherScript validator <>
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
-                tx = Constraints.mustPayToPubKey winner (Ada.lovelaceValueOf $ (stake dat - minLovelace)) <>
-                     Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ minLovelace) <>
-                     Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle)
+                tx = Constraints.mustPayToPubKey winner (Ada.lovelaceValueOf (stake dat - minLovelace)) <>
+                     Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf minLovelace) <>
+                     Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData Raffle)
             Contract.logInfo $ "Original members:" <> show (members dat)
             Contract.logInfo $ "Members shuffled:" <> show sMembers
             Contract.logInfo $ "Winner:" <> show winner
