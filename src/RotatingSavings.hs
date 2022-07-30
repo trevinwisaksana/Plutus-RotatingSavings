@@ -55,7 +55,7 @@ data SavingsDatum = SavingsDatum
 
 PlutusTx.unstableMakeIsData ''SavingsDatum
 
-data SavingsRedeemer = JoinSession | MakePayment | Leave PaymentPubKeyHash | Raffle
+data SavingsRedeemer = JoinSession | MakePayment PaymentPubKeyHash | Leave PaymentPubKeyHash | Raffle PaymentPubKeyHash
     deriving Show
 
 PlutusTx.unstableMakeIsData ''SavingsRedeemer
@@ -65,13 +65,15 @@ mkRotatingSavingsValidator ::  SavingsDatum -> SavingsRedeemer -> ScriptContext 
 mkRotatingSavingsValidator dat red ctx =
     case red of
         JoinSession ->
-            traceIfFalse "Stake cannot be zero"          stakeIsGreaterThanZero
-        MakePayment ->
-            traceIfFalse "Stake cannot be zero"          stakeIsGreaterThanZero
-        Raffle ->
-            -- traceIfFalse "Stake cannot be zero"          stakeIsGreaterThanZero &&
-            -- traceIfFalse "Join deadline has not passed"  deadlineReached
-            traceIfFalse "Stake cannot be zero"          stakeIsGreaterThanZero
+            traceIfFalse "Join deadline has passed"      deadlineNotPassed &&
+            traceIfFalse "Minimum stake is 2 ADA"        stakeIsGreaterThanZero
+        MakePayment pkh ->
+            traceIfFalse "Stake cannot be zero"          stakeIsGreaterThanZero &&
+            traceIfFalse "User not in session"           (isPartOfSession pkh dat)
+        Raffle pkh ->
+            traceIfFalse "Join deadline has not passed"  deadlineReached &&
+            traceIfFalse "Stake cannot be zero"          stakeIsGreaterThanZero &&
+            traceIfFalse "User not in session"           (isPartOfSession pkh dat)
         Leave pkh ->
             traceIfFalse "User not in session"           (isPartOfSession pkh dat)
     where
@@ -85,7 +87,7 @@ mkRotatingSavingsValidator dat red ctx =
         deadlineNotPassed = contains (to $ joinDeadline dat) $ txInfoValidRange info
 
         stakeIsGreaterThanZero :: Bool
-        stakeIsGreaterThanZero = stake dat > 0
+        stakeIsGreaterThanZero = stake dat > minLovelace
 
         isPartOfSession :: PaymentPubKeyHash -> SavingsDatum -> Bool
         isPartOfSession pkh dat = pkh `elem` members dat
@@ -163,32 +165,32 @@ joinSession p = do
     now   <- currentTime
     Contract.logInfo $ "Current time:" <> show now
     isInSession <- alreadyInSession pkh
-    case isInSession of
-        False -> do
-            utxos <- Map.filter (isSuitable now) <$> utxosAt rotatingSavingsScriptAddress
-            if Map.null utxos
-                then Contract.logInfo @String $ "No saving session available"
-                else do
-                    let sessions = snd <$> (Map.toList utxos)
-                        oref = head $ fst <$> Map.toList utxos
-                        most = hasMostMembers sessions
-                        dat = getDatum' $ most
-                        newDat = SavingsDatum
-                            { stake    = (stake dat) + (jsStake p)
-                            , members  = [pkh] ++ members dat
-                            , winners  = []
-                            , joinDeadline = joinDeadline dat
-                            }
-                        lookups = Constraints.unspentOutputs utxos <>
-                                  Constraints.otherScript validator <>
-                                  Constraints.typedValidatorLookups typedRotatingSavingsValidator
-                        tx   = Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ stake newDat) <>
-                               Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ JoinSession)
-                    Contract.logInfo $ "New members:" <> show (members newDat)
-                    ledgerTx <- submitTxConstraintsWith @SavingsSession lookups tx
-                    void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
-                    Contract.logInfo @String $ "Joined session"
-        True -> Contract.logInfo @String $ "Cannot join another session"
+    if isInSession then Contract.logInfo @String $ "Cannot join another session" else (do
+        utxos <- Map.filter (isSuitable now) <$> utxosAt rotatingSavingsScriptAddress
+        if Map.null utxos
+            then Contract.logInfo @String $ "No saving session available"
+            else do
+                let sessions = snd <$> Map.toList utxos
+                    oref = head $ fst <$> Map.toList utxos
+                    most = hasMostMembers sessions
+                    dat = getDatum' most
+                    newDat = SavingsDatum
+                        { stake    = stake dat + jsStake p
+                        , members  = pkh : members dat
+                        , winners  = []
+                        , joinDeadline = joinDeadline dat
+                        }
+                    lookups = Constraints.unspentOutputs utxos <>
+                              Constraints.otherScript validator <>
+                              Constraints.typedValidatorLookups typedRotatingSavingsValidator
+                    tx   = Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ stake newDat) <>
+                           Constraints.mustValidateIn (to $ now + 1000) <>
+                           Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData JoinSession)
+                Contract.logInfo $ "Join Deadline:" <> show (joinDeadline dat)
+                Contract.logInfo $ "New members:" <> show (members newDat)
+                ledgerTx <- submitTxConstraintsWith @SavingsSession lookups tx
+                void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
+                Contract.logInfo @String $ "Joined session")
     where
         isSuitable :: POSIXTime -> ChainIndexTxOut -> Bool
         isSuitable now o = case _ciTxOutDatum o of
@@ -211,7 +213,7 @@ leaveSession = do
     pkh <- Contract.ownPaymentPubKeyHash
     utxos <- Map.filter (containsPkh pkh) <$> utxosAt rotatingSavingsScriptAddress
     if Map.null utxos
-        then do Contract.logInfo @String $ "You have not joined a session"
+        then Contract.logInfo @String $ "You have not joined a session"
         else do
             let dat = getDatum' (head $ snd <$> Map.toList utxos)
                 oref = head $ fst <$> Map.toList utxos
@@ -243,7 +245,7 @@ makePayment amount = do
     test <- utxosAt rotatingSavingsScriptAddress
     Contract.logInfo $ "UTXOs:" <> show test
     if Map.null utxos
-        then do Contract.logInfo @String $ "You have not joined a session"
+        then Contract.logInfo @String $ "You have not joined a session"
         else do
             let dat = getDatum' (head $ snd <$> Map.toList utxos)
                 oref = head $ fst <$> Map.toList utxos
@@ -257,7 +259,7 @@ makePayment amount = do
                           Constraints.otherScript validator <>
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
                 tx   = Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ stake newDat) <>
-                       Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ MakePayment)
+                       Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ MakePayment pkh)
             Contract.logInfo $ "Stake:" <> show (stake newDat)
             ledgerTx <- submitTxConstraintsWith @SavingsSession lookups tx
             void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
@@ -269,15 +271,13 @@ raffle = do
     utxos <- Map.filter (containsPkh pkh) <$> utxosAt rotatingSavingsScriptAddress
     Contract.logInfo $ "UTXOs:" <> show utxos
     if Map.null utxos
-        then do Contract.logInfo @String $ "You have not joined a session"
+        then Contract.logInfo @String $ "You have not joined a session"
         else do
             let session = head $ snd <$> Map.toList utxos
                 oref = head $ fst <$> Map.toList utxos
                 dat = getDatum' (head $ snd <$> Map.toList utxos)
                 everyoneHasWonOnce = length (winners dat) == length (members dat)
-            case everyoneHasWonOnce of
-                True -> resetSession dat utxos oref
-                False -> continueSession dat utxos oref
+            if everyoneHasWonOnce then resetSession dat utxos oref else continueSession dat utxos oref
     where
         shuffleMembers :: [PaymentPubKeyHash] -> [PaymentPubKeyHash]
         shuffleMembers [] = []
@@ -292,6 +292,8 @@ raffle = do
 
         resetSession :: AsContractError e => SavingsDatum -> Map TxOutRef ChainIndexTxOut -> TxOutRef -> Contract w s e ()
         resetSession dat utxos oref = do
+            pkh <- Contract.ownPaymentPubKeyHash
+            now   <- currentTime
             let sMembers = shuffleMembers (members dat)
                 winner = head sMembers
                 newDat = SavingsDatum {
@@ -303,9 +305,10 @@ raffle = do
                 lookups = Constraints.unspentOutputs utxos <>
                           Constraints.otherScript validator <>
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
-                tx = Constraints.mustPayToPubKey winner (Ada.lovelaceValueOf $ (stake dat - minLovelace)) <>
-                     Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ minLovelace) <>
-                     Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle)
+                tx = Constraints.mustPayToPubKey winner (Ada.lovelaceValueOf (stake dat - minLovelace)) <>
+                     Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf minLovelace) <>
+                     Constraints.mustValidateIn (from now) <>
+                     Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle pkh)
             Contract.logInfo $ "Original members:" <> show (members dat)
             Contract.logInfo $ "Members shuffled:" <> show sMembers
             Contract.logInfo $ "Winner:" <> show winner
@@ -315,6 +318,8 @@ raffle = do
 
         continueSession :: AsContractError e => SavingsDatum -> Map TxOutRef ChainIndexTxOut -> TxOutRef -> Contract w s e ()
         continueSession dat utxos oref = do
+            pkh <- Contract.ownPaymentPubKeyHash
+            now   <- currentTime
             let sMembers = shuffleMembers (notWinners (members dat) (winners dat))
                 winner = head sMembers
                 newDat = SavingsDatum {
@@ -328,7 +333,8 @@ raffle = do
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
                 tx = Constraints.mustPayToPubKey winner (Ada.lovelaceValueOf (stake dat - minLovelace)) <>
                      Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf minLovelace) <>
-                     Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData Raffle)
+                     Constraints.mustValidateIn (from now) <>
+                     Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle pkh)
             Contract.logInfo $ "Original members:" <> show (members dat)
             Contract.logInfo $ "Members shuffled:" <> show sMembers
             Contract.logInfo $ "Winner:" <> show winner
@@ -367,9 +373,9 @@ startSessionTrace = do
     h1 <- activateContractWallet (knownWallet 1) endpoints
     callEndpoint @"startSession" h1 $ StartSessionParams
         { ssStake = 10000000
-        , ssJoinDeadline = 1659055562000
+        , ssJoinDeadline = slotToBeginPOSIXTime def 100
         }
-    s <- Emulator.waitNSlots 2
+    s <- Emulator.waitNSlots 10
     Extras.logInfo $ "Reached " ++ show s
 
 -- Anyone can join the session before the deadline
@@ -384,13 +390,13 @@ joinSessionTrace = do
     h3 <- activateContractWallet (knownWallet 3) endpoints
     callEndpoint @"startSession" h1 $ StartSessionParams
         { ssStake = 10000000
-        , ssJoinDeadline = 1659055562000
+        , ssJoinDeadline = slotToBeginPOSIXTime def 100
         }
-    void $ Emulator.waitNSlots 2
+    void $ Emulator.waitNSlots 10
     callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
-    void $ Emulator.waitNSlots 2
+    void $ Emulator.waitNSlots 10
     callEndpoint @"joinSession" h3 $ JoinSessionParams { jsStake = 5000000 }
-    s <- Emulator.waitNSlots 2
+    s <- Emulator.waitNSlots 10
     Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
     Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
     Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
@@ -407,15 +413,15 @@ raffleTrace = do
     h3 <- activateContractWallet (knownWallet 3) endpoints
     callEndpoint @"startSession" h1 $ StartSessionParams
         { ssStake = 10000000
-        , ssJoinDeadline = 1659055562000
+        , ssJoinDeadline = slotToBeginPOSIXTime def 100
         }
-    void $ Emulator.waitNSlots 2
+    void $ Emulator.waitNSlots 10
     callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
-    void $ Emulator.waitNSlots 2
+    void $ Emulator.waitNSlots 10
     callEndpoint @"joinSession" h3 $ JoinSessionParams { jsStake = 5000000 }
-    void $ Emulator.waitNSlots 2
-    callEndpoint @"raffle" h1 $ ()
-    s <- Emulator.waitNSlots 2
+    void $ Emulator.waitUntilSlot 110
+    callEndpoint @"raffle" h1 ()
+    s <- Emulator.waitNSlots 10
     Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
     Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
     Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
@@ -433,19 +439,19 @@ makePaymentTrace = do
     h3 <- activateContractWallet (knownWallet 3) endpoints
     callEndpoint @"startSession" h1 $ StartSessionParams
         { ssStake = 10000000
-        , ssJoinDeadline = 1659055562000
+        , ssJoinDeadline = slotToBeginPOSIXTime def 100
         }
-    void $ Emulator.waitNSlots 2
+    void $ Emulator.waitNSlots 10
     callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
-    void $ Emulator.waitNSlots 2
+    void $ Emulator.waitNSlots 10
     callEndpoint @"joinSession" h3 $ JoinSessionParams { jsStake = 5000000 }
-    void $ Emulator.waitNSlots 2
-    callEndpoint @"raffle" h1 $ ()
-    void $ Emulator.waitNSlots 2
-    callEndpoint @"makePayment" h1 $ 3000000
-    void $ Emulator.waitNSlots 2
-    callEndpoint @"makePayment" h2 $ 3000000
-    s <- Emulator.waitNSlots 2
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"raffle" h1 ()
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"makePayment" h1 3000000
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"makePayment" h2 3000000
+    s <- Emulator.waitNSlots 10
     Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
     Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
     Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
@@ -461,13 +467,13 @@ leaveSessionTrace = do
     h2 <- activateContractWallet (knownWallet 2) endpoints
     callEndpoint @"startSession" h1 $ StartSessionParams
         { ssStake = 10000000
-        , ssJoinDeadline = 1659055562000
+        , ssJoinDeadline = slotToBeginPOSIXTime def 100
         }
-    void $ Emulator.waitNSlots 2
+    void $ Emulator.waitNSlots 10
     callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
-    void $ Emulator.waitNSlots 2
-    callEndpoint @"leaveSession" h2 $ ()
-    s <- Emulator.waitNSlots 2
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"leaveSession" h2 ()
+    s <- Emulator.waitNSlots 10
     Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
     Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
     Extras.logInfo $ "Reached " ++ show s
