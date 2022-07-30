@@ -1,7 +1,7 @@
 -- Bump this if you need newer packages.
 index-state: 2022-01-22T00:00:00Z
 
-packages: plutus-pioneer-program-week04.cabal
+packages: plutus-rotating-savings.cabal
 
 -- We never, ever, want this.
 write-ghc-environment-files: never
