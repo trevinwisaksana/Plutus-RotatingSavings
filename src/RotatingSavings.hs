@@ -87,7 +87,7 @@ mkRotatingSavingsValidator dat red ctx =
         deadlineNotPassed = contains (to $ joinDeadline dat) $ txInfoValidRange info
 
         stakeIsGreaterThanZero :: Bool
-        stakeIsGreaterThanZero = stake dat > minLovelace
+        stakeIsGreaterThanZero = stake dat > 0
 
         isPartOfSession :: PaymentPubKeyHash -> SavingsDatum -> Bool
         isPartOfSession pkh dat = pkh `elem` members dat
@@ -439,19 +439,19 @@ makePaymentTrace = do
     h3 <- activateContractWallet (knownWallet 3) endpoints
     callEndpoint @"startSession" h1 $ StartSessionParams
         { ssStake = 10000000
-        , ssJoinDeadline = slotToBeginPOSIXTime def 100
+        , ssJoinDeadline = slotToBeginPOSIXTime def 30
         }
-    void $ Emulator.waitNSlots 10
+    void $ Emulator.waitNSlots 5
     callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
-    void $ Emulator.waitNSlots 10
+    void $ Emulator.waitNSlots 5
     callEndpoint @"joinSession" h3 $ JoinSessionParams { jsStake = 5000000 }
-    void $ Emulator.waitNSlots 10
+    void $ Emulator.waitUntilSlot 35 
     callEndpoint @"raffle" h1 ()
-    void $ Emulator.waitNSlots 10
+    void $ Emulator.waitNSlots 5
     callEndpoint @"makePayment" h1 3000000
-    void $ Emulator.waitNSlots 10
+    void $ Emulator.waitNSlots 5
     callEndpoint @"makePayment" h2 3000000
-    s <- Emulator.waitNSlots 10
+    s <- Emulator.waitNSlots 5
     Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
     Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
     Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
