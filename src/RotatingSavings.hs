@@ -48,7 +48,7 @@ minLovelace = 2000000
 
 data SavingsDatum = SavingsDatum
     { members        :: [PaymentPubKeyHash]
-    , winners        :: [PaymentPubKeyHash]
+    , participants   :: [PaymentPubKeyHash]
     , stake          :: Integer
     , joinDeadline   :: POSIXTime
     } deriving Show
@@ -136,6 +136,9 @@ getDatum' o = case _ciTxOutDatum o of
         Nothing -> traceError "Unknown datum type"
         Just d  -> d
 
+removePkh :: PaymentPubKeyHash -> [PaymentPubKeyHash] -> [PaymentPubKeyHash]
+removePkh element list = PlutusTx.Prelude.filter (\e -> e/=element) list
+
 data StartSessionParams = StartSessionParams
     { ssStake            :: !Integer
     , ssJoinDeadline     :: !POSIXTime
@@ -147,10 +150,11 @@ startSession p = do
     let dat = SavingsDatum
                 { stake         = ssStake p
                 , members       = [pkh]
-                , winners       = []
+                , participants  = [pkh]
                 , joinDeadline  = ssJoinDeadline p
                 }
         tx   = Constraints.mustPayToTheScript dat $ Ada.lovelaceValueOf $ ssStake p
+    Contract.logInfo $ "Members:" <> show (members dat)
     ledgerTx <- submitTxConstraints typedRotatingSavingsValidator tx
     void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
     Contract.logInfo @String $ "Session has started"
@@ -177,7 +181,7 @@ joinSession p = do
                     newDat = SavingsDatum
                         { stake    = stake dat + jsStake p
                         , members  = pkh : members dat
-                        , winners  = []
+                        , participants  = pkh : members dat
                         , joinDeadline = joinDeadline dat
                         }
                     lookups = Constraints.unspentOutputs utxos <>
@@ -220,7 +224,7 @@ leaveSession = do
                 newDat = SavingsDatum
                     { stake    = stake dat
                     , members  = removePkh pkh $ members dat
-                    , winners  = removePkh pkh $ winners dat
+                    , participants  = removePkh pkh $ participants dat
                     , joinDeadline = joinDeadline dat
                     }
                 lookups = Constraints.unspentOutputs utxos <>
@@ -232,11 +236,6 @@ leaveSession = do
             ledgerTx <- submitTxConstraintsWith @SavingsSession lookups tx
             void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
             Contract.logInfo @String $ "Left session"
-    where
-        removePkh :: PaymentPubKeyHash -> [PaymentPubKeyHash] -> [PaymentPubKeyHash]
-        removePkh _ [] = []
-        removePkh x (y:ys) | x == y = removePkh x ys
-                           | otherwise = y : removePkh x ys
 
 makePayment :: AsContractError e => Integer -> Contract w s e ()
 makePayment amount = do
@@ -252,7 +251,7 @@ makePayment amount = do
                 newDat = SavingsDatum
                     { stake    = stake dat + amount
                     , members  = members dat
-                    , winners  = winners dat
+                    , participants  = participants dat
                     , joinDeadline = joinDeadline dat
                     }
                 lookups = Constraints.unspentOutputs utxos <>
@@ -276,7 +275,7 @@ raffle = do
             let session = head $ snd <$> Map.toList utxos
                 oref = head $ fst <$> Map.toList utxos
                 dat = getDatum' (head $ snd <$> Map.toList utxos)
-                everyoneHasWonOnce = length (winners dat) == length (members dat)
+                everyoneHasWonOnce = length (participants dat) == 0
             if everyoneHasWonOnce then resetSession dat utxos oref else continueSession dat utxos oref
     where
         shuffleMembers :: [PaymentPubKeyHash] -> [PaymentPubKeyHash]
@@ -287,19 +286,16 @@ raffle = do
         splitAlt :: [a] -> ([a],[a])
         splitAlt = PlutusTx.Prelude.foldr (\x (ys, zs) -> (x:zs, ys)) ([],[])
 
-        notWinners :: [PaymentPubKeyHash] -> [PaymentPubKeyHash] -> [PaymentPubKeyHash]
-        notWinners members winners = PlutusTx.Prelude.filter (`notElem` winners) members
-
         resetSession :: AsContractError e => SavingsDatum -> Map TxOutRef ChainIndexTxOut -> TxOutRef -> Contract w s e ()
         resetSession dat utxos oref = do
             pkh <- Contract.ownPaymentPubKeyHash
             now   <- currentTime
-            let sMembers = shuffleMembers (members dat)
-                winner = head sMembers
+            let sParticipants = shuffleMembers (members dat)
+                winner = head sParticipants
                 newDat = SavingsDatum {
                   stake    = minLovelace
                 , members  = members dat
-                , winners  = [winner]
+                , participants  = members dat
                 , joinDeadline = joinDeadline dat
                 }
                 lookups = Constraints.unspentOutputs utxos <>
@@ -310,7 +306,8 @@ raffle = do
                      Constraints.mustValidateIn (from now) <>
                      Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle pkh)
             Contract.logInfo $ "Original members:" <> show (members dat)
-            Contract.logInfo $ "Members shuffled:" <> show sMembers
+            Contract.logInfo $ "Members shuffled:" <> show sParticipants
+            Contract.logInfo $ "Participants:" <> show (participants newDat)
             Contract.logInfo $ "Winner:" <> show winner
             ledgerTx <- submitTxConstraintsWith @SavingsSession lookups tx
             void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
@@ -320,12 +317,14 @@ raffle = do
         continueSession dat utxos oref = do
             pkh <- Contract.ownPaymentPubKeyHash
             now   <- currentTime
-            let sMembers = shuffleMembers (notWinners (members dat) (winners dat))
-                winner = head sMembers
+            Contract.logInfo $ "Participants Before Raffle:" <> show (participants dat)
+            let sParticipants = shuffleMembers (participants dat)
+                winner = head sParticipants
+                updatedParticipants = removePkh winner $ participants dat
                 newDat = SavingsDatum {
                   stake    = minLovelace
                 , members  = members dat
-                , winners  = winner : winners dat
+                , participants  = updatedParticipants
                 , joinDeadline = joinDeadline dat
                 }
                 lookups = Constraints.unspentOutputs utxos <>
@@ -335,8 +334,9 @@ raffle = do
                      Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf minLovelace) <>
                      Constraints.mustValidateIn (from now) <>
                      Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle pkh)
-            Contract.logInfo $ "Original members:" <> show (members dat)
-            Contract.logInfo $ "Members shuffled:" <> show sMembers
+            Contract.logInfo $ "Original members:" <> show (members newDat)
+            Contract.logInfo $ "Members shuffled:" <> show sParticipants
+            Contract.logInfo $ "Participants:" <> show (participants newDat)
             Contract.logInfo $ "Winner:" <> show winner
             ledgerTx <- submitTxConstraintsWith @SavingsSession lookups tx
             void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
@@ -427,6 +427,33 @@ raffleTrace = do
     Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
     Extras.logInfo $ "Reached " ++ show s
 
+-- A winner will be randomly selected from a list of members who haven't won
+raffleTwiceTest :: IO ()
+raffleTwiceTest = runEmulatorTraceIO raffleTwiceTrace
+
+raffleTwiceTrace :: EmulatorTrace ()
+raffleTwiceTrace = do
+    h1 <- activateContractWallet (knownWallet 1) endpoints
+    h2 <- activateContractWallet (knownWallet 2) endpoints
+    callEndpoint @"startSession" h1 $ StartSessionParams
+        { ssStake = 10000000
+        , ssJoinDeadline = slotToBeginPOSIXTime def 100
+        }
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
+    void $ Emulator.waitUntilSlot 110
+    callEndpoint @"raffle" h1 ()
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"makePayment" h1 3000000
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"makePayment" h2 3000000
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"raffle" h1 ()
+    s <- Emulator.waitNSlots 10
+    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
+    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
+    Extras.logInfo $ "Reached " ++ show s
+
 -- Only members participating in a session can make a payment
 -- this is used so members can pay back after winning the raffle
 makePaymentTest :: IO ()
@@ -443,13 +470,13 @@ makePaymentTrace = do
         }
     void $ Emulator.waitNSlots 5
     callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
-    void $ Emulator.waitNSlots 5
+    void $ Emulator.waitNSlots 10
     callEndpoint @"joinSession" h3 $ JoinSessionParams { jsStake = 5000000 }
-    void $ Emulator.waitUntilSlot 35 
+    void $ Emulator.waitUntilSlot 35
     callEndpoint @"raffle" h1 ()
     void $ Emulator.waitNSlots 5
     callEndpoint @"makePayment" h1 3000000
-    void $ Emulator.waitNSlots 5
+    void $ Emulator.waitNSlots 10
     callEndpoint @"makePayment" h2 3000000
     s <- Emulator.waitNSlots 5
     Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
@@ -476,4 +503,63 @@ leaveSessionTrace = do
     s <- Emulator.waitNSlots 10
     Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
     Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
+    Extras.logInfo $ "Reached " ++ show s
+
+-- Once everyone wins, the participants list should reset to members list
+everyoneWinsTest :: IO ()
+everyoneWinsTest = runEmulatorTraceIO everyoneWinsTrace
+
+everyoneWinsTrace :: EmulatorTrace ()
+everyoneWinsTrace = do
+    h1 <- activateContractWallet (knownWallet 1) endpoints
+    h2 <- activateContractWallet (knownWallet 2) endpoints
+    callEndpoint @"startSession" h1 $ StartSessionParams
+        { ssStake = 10000000
+        , ssJoinDeadline = slotToBeginPOSIXTime def 100
+        }
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
+    void $ Emulator.waitUntilSlot 110
+    callEndpoint @"raffle" h1 ()
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"makePayment" h1 3000000
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"makePayment" h2 3000000
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"raffle" h1 ()
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"makePayment" h1 3000000
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"makePayment" h2 3000000
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"raffle" h1 ()
+    s <- Emulator.waitNSlots 10
+    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
+    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
+    Extras.logInfo $ "Reached " ++ show s
+
+-- User not part of a session cannot raffle
+failRaffleWithoutJoiningTest :: IO ()
+failRaffleWithoutJoiningTest = runEmulatorTraceIO raffleWithoutJoiningTrace
+
+raffleWithoutJoiningTrace :: EmulatorTrace ()
+raffleWithoutJoiningTrace = do
+    h1 <- activateContractWallet (knownWallet 1) endpoints
+    h2 <- activateContractWallet (knownWallet 2) endpoints
+    h3 <- activateContractWallet (knownWallet 3) endpoints
+    h4 <- activateContractWallet (knownWallet 4) endpoints
+    callEndpoint @"startSession" h1 $ StartSessionParams
+        { ssStake = 10000000
+        , ssJoinDeadline = slotToBeginPOSIXTime def 50
+        }
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
+    void $ Emulator.waitNSlots 10
+    callEndpoint @"joinSession" h3 $ JoinSessionParams { jsStake = 5000000 }
+    void $ Emulator.waitUntilSlot 60
+    callEndpoint @"raffle" h4 ()
+    s <- Emulator.waitNSlots 10
+    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
+    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
+    Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
     Extras.logInfo $ "Reached " ++ show s
