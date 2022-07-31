@@ -13,3 +13,16 @@ A proof-of-concept Plutus script that mimics the functionality of a rotating sav
 - The script should prevent someone from winning and then leaving immediately
 - Script may be very heavy and unoptimized
 - Members shouldn't be able to call raffle anytime after the deadline has passed but in time intervals instead
+
+## How to run
+1. Change directory to the project's root folder
+2. Run `cabal repl`
+3. Call the test functions in the file
+- `startSessionTest`
+- `joinSessionTest`
+- `raffleTest`
+- `raffleTwiceTest`
+- `makePaymentTest`
+- `leaveSessionTest`
+- `everyoneWinsTest`
+- `failRaffleWithoutJoiningTest`
