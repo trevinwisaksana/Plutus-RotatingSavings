@@ -10,38 +10,39 @@
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE DerivingStrategies  #-}
-{-# OPTIONS_GHC -fno-warn-unused-imports #-}
 {-# LANGUAGE NumericUnderscores #-}
 
 module RotatingSavings where
 
-import           Control.Monad        hiding (fmap)
-import           Data.Aeson           (ToJSON, FromJSON)
-import           Data.Map             as Map
-import           Data.Text            (Text)
-import           Data.Void            (Void)
-import           GHC.Generics         (Generic)
-import           Plutus.Contract      as Contract
-import           PlutusTx             (Data (..))
-import qualified PlutusTx
-import           PlutusTx.Prelude     hiding (Semigroup(..), unless)
-import qualified PlutusTx.Builtins    as Builtins
-import           Control.Monad.Freer.Extras as Extras
-import           Data.Default               (Default (..))
-import           Data.Functor               (void)
+import           Cardano.Api                          (PlutusScriptV2,
+                                                       writeFileTextEnvelope)
+import           Cardano.Api.Shelley                  (PlutusScript (PlutusScriptSerialised),
+                                                       PlutusScriptV1)
+import           Codec.Serialise
+import qualified Data.ByteString.Lazy                 as LBS
+import qualified Data.ByteString.Short                as SBS
+import           Data.Functor                         (void)
+import           Data.Map                             as Map
+import           Data.Text                            (Text)
+import           Data.Aeson                           (ToJSON, FromJSON)
+import           Data.Void                            (Void)
+import           Data.Default
+import           GHC.Generics                         (Generic)
+import           Ledger
 import           Ledger.TimeSlot
-import           Plutus.Trace.Emulator  as Emulator
+import           Ledger.Ada                           as Ada
+import           Ledger.Constraints                   as Constraints
+import qualified Ledger.Typed.Scripts                 as Scripts
+import           Plutus.Contract                      as Contract
+import qualified Plutus.Script.Utils.V1.Scripts       as PSU.V1
+import qualified Plutus.Script.Utils.V1.Typed.Scripts as PSU.V1
+import           Plutus.Trace.Emulator                as Emulator
+import qualified Plutus.V1.Ledger.Api                 as PlutusV1
+import qualified Plutus.V2.Ledger.Api                 as PlutusV2
+import qualified PlutusTx
+import           PlutusTx.Prelude                     as P hiding (Semigroup (..), unless, (.))
+import           Prelude                              (IO, Semigroup (..), Show (..), String, (.))
 import           Wallet.Emulator.Wallet
-import           Ledger               hiding (singleton)
-import           Ledger.Constraints   (TxConstraints)
-import qualified Ledger.Constraints   as Constraints
-import qualified Ledger.Typed.Scripts as Scripts
-import           Ledger.Ada           as Ada
-import           Playground.Contract  (printJson, printSchemas, ensureKnownCurrencies, stage, ToSchema)
-import           Playground.TH        (mkKnownCurrencies, mkSchemaDefinitions)
-import           Playground.Types     (KnownCurrency (..))
-import           Prelude              (IO, Semigroup (..), Show (..), String, Int, fromIntegral)
-import           Text.Printf          (printf)
 
 minLovelace :: Integer
 minLovelace = 2000000
@@ -102,12 +103,12 @@ typedRotatingSavingsValidator = Scripts.mkTypedValidator @SavingsSession
     $$(PlutusTx.compile [|| mkRotatingSavingsValidator ||])
     $$(PlutusTx.compile [|| wrap ||])
       where
-        wrap = Scripts.wrapValidator @SavingsDatum @SavingsRedeemer
+        wrap = PSU.V1.mkUntypedValidator
 
-validator :: Validator
+validator :: PlutusV2.Validator
 validator = Scripts.validatorScript typedRotatingSavingsValidator
 
-rotatingSavingsScript :: Ledger.ValidatorHash
+rotatingSavingsScript :: PSU.V1.ValidatorHash
 rotatingSavingsScript = Scripts.validatorHash typedRotatingSavingsValidator
 
 rotatingSavingsScriptAddress :: Ledger.Address
@@ -125,24 +126,24 @@ alreadyInSession pkh = do
 containsPkh :: PaymentPubKeyHash -> ChainIndexTxOut -> Bool
 containsPkh pkh o = case _ciTxOutDatum o of
     Left _          -> False
-    Right (Datum e) -> case PlutusTx.fromBuiltinData e of
+    Right (PlutusV2.Datum e) -> case PlutusTx.fromBuiltinData e of
         Nothing -> False
         Just d  -> pkh `elem` members d
 
 getDatum' :: ChainIndexTxOut -> SavingsDatum
 getDatum' o = case _ciTxOutDatum o of
     Left  _ -> traceError "Datum does not exist"
-    Right (Datum e) -> case PlutusTx.fromBuiltinData e of
+    Right (PlutusV2.Datum e) -> case PlutusTx.fromBuiltinData e of
         Nothing -> traceError "Unknown datum type"
         Just d  -> d
 
 removePkh :: PaymentPubKeyHash -> [PaymentPubKeyHash] -> [PaymentPubKeyHash]
-removePkh element list = PlutusTx.Prelude.filter (\e -> e/=element) list
+removePkh element list = P.filter (\e -> e/=element) list
 
 data StartSessionParams = StartSessionParams
     { ssStake            :: !Integer
     , ssJoinDeadline     :: !POSIXTime
-    } deriving (Show, Generic, FromJSON, ToJSON, ToSchema)
+    } deriving (Show, Generic, FromJSON, ToJSON)
 
 startSession :: AsContractError e => StartSessionParams -> Contract w s e ()
 startSession p = do
@@ -161,7 +162,7 @@ startSession p = do
 
 data JoinSessionParams = JoinSessionParams
     { jsStake            :: !Integer
-    } deriving (Show, Generic, FromJSON, ToJSON, ToSchema)
+    } deriving (Show, Generic, FromJSON, ToJSON)
 
 joinSession :: AsContractError e => JoinSessionParams -> Contract w s e ()
 joinSession p = do
@@ -189,7 +190,7 @@ joinSession p = do
                               Constraints.typedValidatorLookups typedRotatingSavingsValidator
                     tx   = Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ stake newDat) <>
                            Constraints.mustValidateIn (to $ now + 1000) <>
-                           Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData JoinSession)
+                           Constraints.mustSpendScriptOutput oref (PlutusV1.Redeemer $ PlutusTx.toBuiltinData JoinSession)
                 Contract.logInfo $ "Join Deadline:" <> show (joinDeadline dat)
                 Contract.logInfo $ "New members:" <> show (members newDat)
                 ledgerTx <- submitTxConstraintsWith @SavingsSession lookups tx
@@ -199,7 +200,7 @@ joinSession p = do
         isSuitable :: POSIXTime -> ChainIndexTxOut -> Bool
         isSuitable now o = case _ciTxOutDatum o of
             Left _          -> False
-            Right (Datum e) -> case PlutusTx.fromBuiltinData e of
+            Right (PlutusV2.Datum e) -> case PlutusTx.fromBuiltinData e of
                 Nothing -> False
                 Just d  -> joinDeadline d > now && length (members d) < 12
 
@@ -231,7 +232,7 @@ leaveSession = do
                           Constraints.otherScript validator <>
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
                 tx   = Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ stake dat) <>
-                       Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Leave pkh)
+                       Constraints.mustSpendScriptOutput oref (PlutusV1.Redeemer $ PlutusTx.toBuiltinData $ Leave pkh)
             Contract.logInfo $ "Members:" <> show (members newDat)
             ledgerTx <- submitTxConstraintsWith @SavingsSession lookups tx
             void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
@@ -258,7 +259,7 @@ makePayment amount = do
                           Constraints.otherScript validator <>
                           Constraints.typedValidatorLookups typedRotatingSavingsValidator
                 tx   = Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf $ stake newDat) <>
-                       Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ MakePayment pkh)
+                       Constraints.mustSpendScriptOutput oref (PlutusV1.Redeemer $ PlutusTx.toBuiltinData $ MakePayment pkh)
             Contract.logInfo $ "Stake:" <> show (stake newDat)
             ledgerTx <- submitTxConstraintsWith @SavingsSession lookups tx
             void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
@@ -284,7 +285,7 @@ raffle = do
                             in ys ++ shuffleMembers zs
 
         splitAlt :: [a] -> ([a],[a])
-        splitAlt = PlutusTx.Prelude.foldr (\x (ys, zs) -> (x:zs, ys)) ([],[])
+        splitAlt = P.foldr (\x (ys, zs) -> (x:zs, ys)) ([],[])
 
         resetSession :: AsContractError e => SavingsDatum -> Map TxOutRef ChainIndexTxOut -> TxOutRef -> Contract w s e ()
         resetSession dat utxos oref = do
@@ -304,7 +305,7 @@ raffle = do
                 tx = Constraints.mustPayToPubKey winner (Ada.lovelaceValueOf (stake dat - minLovelace)) <>
                      Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf minLovelace) <>
                      Constraints.mustValidateIn (from now) <>
-                     Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle pkh)
+                     Constraints.mustSpendScriptOutput oref (PlutusV1.Redeemer $ PlutusTx.toBuiltinData $ Raffle pkh)
             Contract.logInfo $ "Original members:" <> show (members dat)
             Contract.logInfo $ "Members shuffled:" <> show sParticipants
             Contract.logInfo $ "Participants:" <> show (participants newDat)
@@ -333,7 +334,7 @@ raffle = do
                 tx = Constraints.mustPayToPubKey winner (Ada.lovelaceValueOf (stake dat - minLovelace)) <>
                      Constraints.mustPayToTheScript newDat (Ada.lovelaceValueOf minLovelace) <>
                      Constraints.mustValidateIn (from now) <>
-                     Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toBuiltinData $ Raffle pkh)
+                     Constraints.mustSpendScriptOutput oref (PlutusV1.Redeemer $ PlutusTx.toBuiltinData $ Raffle pkh)
             Contract.logInfo $ "Original members:" <> show (members newDat)
             Contract.logInfo $ "Members shuffled:" <> show sParticipants
             Contract.logInfo $ "Participants:" <> show (participants newDat)
@@ -358,10 +359,6 @@ endpoints = awaitPromise (startSession' `select` joinSession' `select` leaveSess
     makePayment' = endpoint @"makePayment" makePayment
     raffle' = endpoint @"raffle" $ const raffle
 
-mkSchemaDefinitions ''RotatingSavingsSchema
-
-mkKnownCurrencies []
-
 -- TEST
 
 -- Anyone can start a session but would have to pay the stake to do so
@@ -375,8 +372,7 @@ startSessionTrace = do
         { ssStake = 10000000
         , ssJoinDeadline = slotToBeginPOSIXTime def 100
         }
-    s <- Emulator.waitNSlots 10
-    Extras.logInfo $ "Reached " ++ show s
+    void $ Emulator.waitNSlots 10
 
 -- Anyone can join the session before the deadline
 -- Member will join a session that has the most members below 12 people
@@ -396,11 +392,7 @@ joinSessionTrace = do
     callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
     void $ Emulator.waitNSlots 10
     callEndpoint @"joinSession" h3 $ JoinSessionParams { jsStake = 5000000 }
-    s <- Emulator.waitNSlots 10
-    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
-    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
-    Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
-    Extras.logInfo $ "Reached " ++ show s
+    void $ Emulator.waitNSlots 10
 
 -- A winner will be randomly selected from a list of members who haven't won
 raffleTest :: IO ()
@@ -421,11 +413,7 @@ raffleTrace = do
     callEndpoint @"joinSession" h3 $ JoinSessionParams { jsStake = 5000000 }
     void $ Emulator.waitUntilSlot 110
     callEndpoint @"raffle" h1 ()
-    s <- Emulator.waitNSlots 10
-    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
-    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
-    Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
-    Extras.logInfo $ "Reached " ++ show s
+    void $ Emulator.waitNSlots 10
 
 -- A winner will be randomly selected from a list of members who haven't won
 raffleTwiceTest :: IO ()
@@ -449,10 +437,7 @@ raffleTwiceTrace = do
     callEndpoint @"makePayment" h2 3000000
     void $ Emulator.waitNSlots 10
     callEndpoint @"raffle" h1 ()
-    s <- Emulator.waitNSlots 10
-    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
-    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
-    Extras.logInfo $ "Reached " ++ show s
+    void $ Emulator.waitNSlots 10
 
 -- Only members participating in a session can make a payment
 -- this is used so members can pay back after winning the raffle
@@ -478,11 +463,7 @@ makePaymentTrace = do
     callEndpoint @"makePayment" h1 3000000
     void $ Emulator.waitNSlots 10
     callEndpoint @"makePayment" h2 3000000
-    s <- Emulator.waitNSlots 5
-    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
-    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
-    Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
-    Extras.logInfo $ "Reached " ++ show s
+    void $ Emulator.waitNSlots 5
 
 -- Upon leaving a session, the member does not get his/her money back
 leaveSessionTest :: IO ()
@@ -500,10 +481,7 @@ leaveSessionTrace = do
     callEndpoint @"joinSession" h2 $ JoinSessionParams { jsStake = 2000000 }
     void $ Emulator.waitNSlots 10
     callEndpoint @"leaveSession" h2 ()
-    s <- Emulator.waitNSlots 10
-    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
-    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
-    Extras.logInfo $ "Reached " ++ show s
+    void $ Emulator.waitNSlots 10
 
 -- Once everyone wins, the participants list should reset to members list
 everyoneWinsTest :: IO ()
@@ -533,10 +511,7 @@ everyoneWinsTrace = do
     callEndpoint @"makePayment" h2 3000000
     void $ Emulator.waitNSlots 10
     callEndpoint @"raffle" h1 ()
-    s <- Emulator.waitNSlots 10
-    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
-    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
-    Extras.logInfo $ "Reached " ++ show s
+    void $ Emulator.waitNSlots 10
 
 -- User not part of a session cannot raffle
 failRaffleWithoutJoiningTest :: IO ()
@@ -558,8 +533,4 @@ raffleWithoutJoiningTrace = do
     callEndpoint @"joinSession" h3 $ JoinSessionParams { jsStake = 5000000 }
     void $ Emulator.waitUntilSlot 60
     callEndpoint @"raffle" h4 ()
-    s <- Emulator.waitNSlots 10
-    Extras.logInfo $ "Wallet 1: " ++ show (knownWallet 1)
-    Extras.logInfo $ "Wallet 2: " ++ show (knownWallet 2)
-    Extras.logInfo $ "Wallet 3: " ++ show (knownWallet 3)
-    Extras.logInfo $ "Reached " ++ show s
+    void $ Emulator.waitNSlots 10
