@@ -1,28 +1,49 @@
-Cabal-Version:      2.4
-Name:               RotatingSavings
-Version:            0.1.0.0
-Author:             Trevin Wisaksana
-Maintainer:         twisaksana@gmail.com
-Build-Type:         Simple
-Copyright:          © 2022 Trevin Wisaksana
-License:            Apache-2.0
-License-files:      LICENSE
+cabal-version:      3.0
+name:               plutus-rotating-savings
+version:            0.1.0.1
+author:             Trevin Wisaksana
+maintainer:         twisaksana@gmail.com
+copyright:          © 2022 Trevin Wisaksana
+license:            Apache-2.0
+
+flag defer-plugin-errors
+    description:
+        Defer errors from the plugin, useful for things like Haddock that can't handle it.
+    default: False
+    manual: True
+
+common lang
+    default-language:   Haskell2010
+    ghc-options:
+      -Wall -Wnoncanonical-monad-instances
+      -Wincomplete-uni-patterns -Wincomplete-record-updates
+      -Wredundant-constraints -Widentities -rtsopts
+      -- See Plutus Tx readme
+      -fobject-code -fno-ignore-interface-pragmas -fno-omit-interface-pragmas
+    if flag(defer-plugin-errors)
+        ghc-options: -fplugin-opt PlutusTx.Plugin:defer-errors
 
 library
-  hs-source-dirs:      src
-  exposed-modules:     RotatingSavings
-  build-depends:       aeson
-                     , base ^>=4.14.1.0
-                     , containers
-                     , data-default
-                     , freer-extras
-                     , playground-common
-                     , plutus-contract
-                     , plutus-ledger
-                     , plutus-ledger-api
-                     , plutus-ledger-constraints
-                     , plutus-tx-plugin
-                     , plutus-tx
-                     , text
-  default-language:    Haskell2010
-  ghc-options:         -Wall -fobject-code -fno-ignore-interface-pragmas -fno-omit-interface-pragmas -fno-strictness -fno-spec-constr -fno-specialise
+    import: lang
+    exposed-modules:
+      RotatingSavings
+
+    build-depends:
+      base >= 4.9 && < 5,
+      aeson -any,
+      bytestring -any,
+      containers -any,
+      freer-extras -any,
+      playground-common -any,
+      plutus-contract -any,
+      plutus-ledger -any,
+      plutus-ledger-api -any,
+      plutus-ledger-constraints -any,
+      plutus-tx -any,
+      plutus-tx-plugin -any,
+      plutus-script-utils -any,
+      cardano-api,
+      text -any,
+      lens -any,
+      serialise,
+      data-default
