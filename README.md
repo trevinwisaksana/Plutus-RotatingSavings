@@ -1,6 +1,8 @@
 # Plutus Rotating Savings
 A proof-of-concept Plutus script that mimics the functionality of a rotating savings session. [Rotating savings](https://www.investopedia.com/terms/r/rotating-credit-and-savings-association.asp#:~:text=A%20rotating%20savings%20and%20credit%20association%20(ROSCA)%20is%20a%20group,the%20funds%20at%20each%20meeting) is a way to provide loans to people within a community without paying any interest. This practice has been documented to have occurred as early as 200 B.C.
 
+[![Code in Cardano Workspace](https://demeter.run/code/badge.svg)](https://demeter.run/code?repository=https://github.com/trevinwisaksana/Plutus-RotatingSavingst&template=plutus)
+
 ## How does it work?
 1. A user calls the `startSession` endpoint (up to 12 people can join per session), sets the join deadline and pays the amount he/she wants to be staked
 2. Participants can join a session by calling `joinSession` and pays the amount of stake he/she wants to place
