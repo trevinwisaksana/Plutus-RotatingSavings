@@ -1,13 +1,13 @@
 { pure ? false, source-repo-override ? { } }:
 let
   packages = import ./. { inherit source-repo-override; };
-  inherit (packages) pkgs plutus-rotating-savings project;
+  inherit (packages) pkgs plutus-starter project;
 
 in
   project.shellFor {
     withHoogle = false;
 
-    nativeBuildInputs = with plutus-rotating-savings; [
+    nativeBuildInputs = with plutus-starter; [
       hlint
       cabal-install
       haskell-language-server
