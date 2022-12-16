@@ -42,7 +42,6 @@ library
     import: lang
     exposed-modules:
       MyModule
-      RotatingSavings
       Plutus.Contracts.Game
     build-depends:
       base >= 4.9 && < 5,
@@ -58,11 +57,8 @@ library
       plutus-tx -any,
       plutus-tx-plugin -any,
       plutus-script-utils -any,
-      cardano-api,
       text -any,
       lens -any,
-      serialise,
-      data-default
     hs-source-dirs: src examples/src
 
 test-suite plutus-example-projects-test
