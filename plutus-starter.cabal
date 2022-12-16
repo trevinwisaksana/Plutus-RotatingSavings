@@ -13,8 +13,8 @@ version:            0.1.0.0
 
 license: Apache-2.0
 license-files: LICENSE
-author:             Your name
-maintainer:         Your email
+author: Trevin Wisaksana
+maintainer: Trevin Wisaksana
 
 -- A copyright notice.
 -- copyright:
@@ -42,7 +42,6 @@ library
     import: lang
     exposed-modules:
       RotatingSavings
-    hs-source-dirs:  src
     build-depends:
       base >= 4.9 && < 5,
       aeson -any,
@@ -57,5 +56,9 @@ library
       plutus-tx -any,
       plutus-tx-plugin -any,
       plutus-script-utils -any,
+      cardano-api,
       text -any,
       lens -any,
+      serialise,
+      data-default
+    hs-source-dirs:  src
